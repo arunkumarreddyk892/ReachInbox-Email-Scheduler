@@ -16,15 +16,32 @@ import { randomUUID } from "crypto";
 const app = express();
 
 // ==========================================
-// MIDDLEWARE
+// CORS CONFIGURATION
 // ==========================================
+
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://reach-inbox-email-scheduler-ebon.vercel.app"
+];
 
 app.use(
   cors({
-    origin: config.frontendUrl,
+    origin: (origin, callback) => {
+      // Allow requests without an Origin header
+      // (for example, health checks and server-to-server requests).
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Not allowed by CORS"));
+    },
     credentials: true
   })
 );
+
+// ==========================================
+// MIDDLEWARE
+// ==========================================
 
 app.use(express.json({ limit: "5mb" }));
 
@@ -192,7 +209,6 @@ app.get("/auth/slack/callback", async (req, res) => {
     res.redirect(config.frontendUrl);
   } catch (error) {
     console.error("Slack OAuth error:", error);
-
     res.status(500).send("Slack connection failed");
   }
 });
@@ -268,8 +284,8 @@ app.post("/api/emails/schedule", async (req, res) => {
       // Save email in MySQL
       const [result]: any = await pool.execute(
         `INSERT INTO emails
-        (user_id, recipient, subject, body, scheduled_at, status, idempotency_key)
-        VALUES (?, ?, ?, ?, ?, 'scheduled', ?)`,
+         (user_id, recipient, subject, body, scheduled_at, status, idempotency_key)
+         VALUES (?, ?, ?, ?, ?, 'scheduled', ?)`,
         [
           user.id,
           recipient,
@@ -294,7 +310,6 @@ app.post("/api/emails/schedule", async (req, res) => {
           )
         },
         {
-          // Custom BullMQ job IDs must not be purely numeric
           jobId: `email-${id}`,
           delay: Math.max(
             0,
@@ -467,7 +482,6 @@ async function start() {
       serverAdapter: board
     });
 
-    // IMPORTANT: Get router from ExpressAdapter
     app.use("/admin/queues", board.getRouter());
 
     // Start Express server
