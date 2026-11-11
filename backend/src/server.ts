@@ -16,6 +16,12 @@ import { randomUUID } from "crypto";
 const app = express();
 
 // ==========================================
+// TRUST RENDER PROXY
+// ==========================================
+
+app.set("trust proxy", 1);
+
+// ==========================================
 // CORS CONFIGURATION
 // ==========================================
 
@@ -27,8 +33,6 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests without an Origin header
-      // (for example, health checks and server-to-server requests).
       if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
@@ -40,10 +44,14 @@ app.use(
 );
 
 // ==========================================
-// MIDDLEWARE
+// BODY PARSER
 // ==========================================
 
 app.use(express.json({ limit: "5mb" }));
+
+// ==========================================
+// SESSION CONFIGURATION
+// ==========================================
 
 app.use(
   session({
@@ -52,11 +60,19 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      sameSite: "lax",
-      secure: false
+      sameSite:
+        process.env.NODE_ENV === "production"
+          ? "none"
+          : "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 24 * 60 * 60 * 1000
     }
   })
 );
+
+// ==========================================
+// PASSPORT CONFIGURATION
+// ==========================================
 
 app.use(passport.initialize());
 app.use(passport.session());
@@ -99,24 +115,31 @@ async function ensureDemoUser() {
 // ==========================================
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    message: "ReachInbox API is running"
+  });
 });
 
 // ==========================================
-// GOOGLE OAUTH
+// GOOGLE OAUTH LOGIN
 // ==========================================
 
 app.get("/auth/google", (req, res, next) => {
   if (!config.googleId) {
     return res
       .status(503)
-      .send("Configure Google OAuth in backend/.env first");
+      .send("Google OAuth is not configured");
   }
 
   passport.authenticate("google", {
     scope: ["profile", "email"]
   })(req, res, next);
 });
+
+// ==========================================
+// GOOGLE OAUTH CALLBACK
+// ==========================================
 
 app.get(
   "/auth/google/callback",
@@ -128,15 +151,53 @@ app.get(
   }
 );
 
+// ==========================================
+// GET CURRENT USER
+// ==========================================
+
 app.get("/auth/me", (req, res) => {
   res.json({
     user: currentUser(req)
   });
 });
 
+// ==========================================
+// LOGOUT
+// ==========================================
+
 app.post("/auth/logout", (req, res) => {
-  req.logout(() => {
-    res.json({ ok: true });
+  req.logout((error) => {
+    if (error) {
+      console.error("Logout error:", error);
+
+      return res.status(500).json({
+        error: "Unable to logout"
+      });
+    }
+
+    req.session.destroy((sessionError) => {
+      if (sessionError) {
+        console.error("Session destroy error:", sessionError);
+
+        return res.status(500).json({
+          error: "Unable to destroy session"
+        });
+      }
+
+      res.clearCookie("connect.sid", {
+        httpOnly: true,
+        sameSite:
+          process.env.NODE_ENV === "production"
+            ? "none"
+            : "lax",
+        secure: process.env.NODE_ENV === "production"
+      });
+
+      res.json({
+        ok: true,
+        message: "Logged out successfully"
+      });
+    });
   });
 });
 
@@ -148,7 +209,7 @@ app.get("/auth/slack", (req, res) => {
   if (!config.slackId) {
     return res
       .status(503)
-      .send("Configure Slack OAuth in backend/.env first");
+      .send("Slack OAuth is not configured");
   }
 
   const state = randomUUID();
@@ -166,6 +227,10 @@ app.get("/auth/slack", (req, res) => {
 
   res.redirect(url.toString());
 });
+
+// ==========================================
+// SLACK OAUTH CALLBACK
+// ==========================================
 
 app.get("/auth/slack/callback", async (req, res) => {
   try {
@@ -191,7 +256,10 @@ app.get("/auth/slack/callback", async (req, res) => {
 
     if (!tokenResult.data.ok) {
       console.error("Slack token error:", tokenResult.data);
-      return res.status(400).send("Slack authorization failed");
+
+      return res.status(400).send(
+        "Slack authorization failed"
+      );
     }
 
     const accessToken = tokenResult.data.access_token;
@@ -209,6 +277,7 @@ app.get("/auth/slack/callback", async (req, res) => {
     res.redirect(config.frontendUrl);
   } catch (error) {
     console.error("Slack OAuth error:", error);
+
     res.status(500).send("Slack connection failed");
   }
 });
@@ -243,7 +312,8 @@ app.post("/api/emails/schedule", async (req, res) => {
     !startAt
   ) {
     return res.status(400).json({
-      error: "recipients, subject, body and startAt are required"
+      error:
+        "recipients, subject, body and startAt are required"
     });
   }
 
@@ -276,7 +346,7 @@ app.post("/api/emails/schedule", async (req, res) => {
 
       const scheduledAt = new Date(
         start.getTime() +
-        i * Math.max(0, Number(delaySeconds)) * 1000
+          i * Math.max(0, Number(delaySeconds)) * 1000
       );
 
       const key = `${user.id}:${recipient}:${randomUUID()}`;
@@ -465,7 +535,7 @@ async function start() {
     // Initialize database
     await initDb();
 
-    // Create demo user in development
+    // Create demo user in development only
     if (process.env.NODE_ENV !== "production") {
       await ensureDemoUser();
     }
@@ -484,14 +554,18 @@ async function start() {
 
     app.use("/admin/queues", board.getRouter());
 
-    // Start Express server
+    // Start server
     app.listen(config.port, () => {
       console.log(
-        `API running at http://localhost:${config.port}`
+        `API running on port ${config.port}`
       );
 
       console.log(
-        `Bull Board running at http://localhost:${config.port}/admin/queues`
+        `Bull Board running at /admin/queues`
+      );
+
+      console.log(
+        `Environment: ${process.env.NODE_ENV}`
       );
     });
   } catch (error) {
